@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 from pathlib import Path
 
 import pytest
+
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_UNMODIFIED_LEARNER_NOTES_MD5 = "f64859f027aca20766eab64e307692c1"
+
+
+def test_learner_notes_modified():
+    """Sentinel: `learner_notes.md` is a TA-rubric-graded deliverable.
+    A submission whose `learner_notes.md` is byte-identical to the
+    starter template has not been filled in.
+    """
+    notes = _REPO_ROOT / "learner_notes.md"
+    assert notes.exists(), "learner_notes.md is missing from the submission"
+    h = hashlib.md5(notes.read_bytes()).hexdigest()
+    assert h != _UNMODIFIED_LEARNER_NOTES_MD5, (
+        "learner_notes.md is the unmodified starter template. Replace each "
+        "bullet question with a narrative answer before resubmitting."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,15 +203,48 @@ def test_hybrid_recall_at_10(neo4j_driver, embedder):
 
 
 # ---------------------------------------------------------------------------
+# Parameterization: vector_search.py must use $params, not f-strings
+# ---------------------------------------------------------------------------
+
+def test_vector_search_uses_parameterized_cypher():
+    """AST inspection: vector_search.py must not f-string interpolate `k`
+    or `vector` (or the query embedding) into the Cypher passed to
+    `session.run`. The vector-index call must use `$k` and `$vector`
+    parameters bound by the driver — same safety contract as the Lab 9B
+    `candidates.py` check and the Integration 9B `compile.py` check.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    vs_path = repo_root / "retrieval" / "vector_search.py"
+    src = vs_path.read_text()
+    tree = ast.parse(src)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for piece in node.values:
+                if isinstance(piece, ast.FormattedValue):
+                    offenders.append(ast.unparse(piece.value))
+
+    assert not offenders, (
+        f"vector_search.py contains f-string interpolation "
+        f"(silent Cypher-injection / serialization-error class): "
+        f"{offenders}. The query embedding and `k` must flow through "
+        f"`$vector` and `$k` parameters bound by the Neo4j driver — "
+        f"never f-string-formatted into the Cypher text."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Starter sentinel
 # ---------------------------------------------------------------------------
 
 def test_starter_unmodified_fails():
     """Sentinel: unmodified starter modules raise NotImplementedError.
 
-    This test PASSES on the unmodified starter (the four learner modules
-    are all stubs that raise NotImplementedError). It FAILS once the
-    learner has implemented all four — at which point the rest of the
+    This test FAILS on the unmodified starter (all four learner modules
+    are stubs that raise NotImplementedError, and the assertion below
+    requires at least one to be implemented). It PASSES once the learner
+    has implemented at least one — at which point the rest of the
     autograder takes over as the real check.
     """
     from retrieval import vector_search, traversal, fuse, hybrid
